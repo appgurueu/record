@@ -7,7 +7,7 @@ Recording.__index = Recording
 local get_timestamp
 
 function Recording.new(box, out_file)
-	-- TODO is the gametime good here?
+	-- TODO dump content id mapping!!
 	local self = setmetatable({
 		box = box,
 		out_stream = RecordingStream.new(box:extents(), out_file),

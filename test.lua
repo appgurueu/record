@@ -6,7 +6,7 @@ local Box = modlib.mod.require("box")
 local Recording = modlib.mod.require("recording")
 local Replay = modlib.mod.require("replay")
 
-local path = core.get_worldpath() .. "/recordings/test.rec"
+local path = core.get_worldpath() .. "/recordings/singleplayer/test.rec"
 
 core.register_on_joinplayer(function(player)
 	local f = assert(io.open(path, "wb"))
@@ -21,7 +21,7 @@ core.register_on_joinplayer(function(player)
     core.after(2, function()
         core.set_node(player:get_pos(), {name = "default:stone"})
     end)
-    core.after(10, function()
+    core.after(5, function()
         core.chat_send_player(pname, "Stopping & replaying recording.")
         recording:stop()
         recording:close()

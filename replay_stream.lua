@@ -14,6 +14,18 @@ function ReplayStream.new(in_file)
 	return self
 end
 
+function ReplayStream:close()
+	self.in_file:close()
+end
+
+function ReplayStream:get_pos()
+	return self.in_file:seek()
+end
+
+function ReplayStream:set_pos(pos)
+	self.in_file:seek("set", pos)
+end
+
 function ReplayStream:unread_chunk(chunk)
 	self.buffered_chunk = chunk
 end
@@ -72,10 +84,6 @@ function ReplayStream:read_events(max_timestamp, process_event)
 	end
 	process_event(unpack_event[event.type](event))
 	return self:read_events(max_timestamp, process_event)
-end
-
-function ReplayStream:close()
-	self.in_file:close()
 end
 
 return ReplayStream

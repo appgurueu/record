@@ -7,15 +7,26 @@ local Replay = {}
 Replay.__index = Replay
 
 function Replay.new(pos, in_file)
+	assert(pos:floor() == pos, "Position must be an integer vector")
 	local self = setmetatable({
 		pos = pos,
 		in_stream = ReplayStream.new(in_file),
 		time = 0,
+		speed = 1,
 	}, Replay)
 	local meta = self.in_stream:read_chunk()
 	assert(meta.version == 0)
 	self.extents = assert(meta.extents)
+	self.init_pos = self.in_stream:get_pos()
 	return self
+end
+
+function Replay:close()
+	self.in_stream:close()
+end
+
+function Replay:get_box()
+	return Box.from_extents(self.extents):offset(self.pos)
 end
 
 local function write_nodes_to_map(box, nodes)
@@ -62,7 +73,7 @@ function event_handlers:sparse_nodes(evt)
 	for pos_hash, packed_node in pairs(evt.diff) do
 		local pos = core.get_position_from_hash(pos_hash)
 		local content_id, param1, param2 = unpack_node(packed_node)
-		core.set_node(pos, {
+		core.set_node(pos + self.pos, {
 			name = core.get_name_from_content_id(content_id),
 			param1 = param1,
 			param2 = param2,
@@ -77,19 +88,27 @@ end
 do
 	local running_replays = {}
 
-	function Replay:start()
+	function Replay:start(on_done)
 		local box = Box.from_extents(self.extents):offset(self.pos)
 		local init = self.in_stream:read_init()
 		write_nodes_to_map(box, init.nodes)
-		running_replays[self] = true
+		running_replays[self] = on_done or function() end
+	end
+
+	function Replay:seek(timestamp)
+		-- Simple (but inefficient) restart and fast-forward
+		self.time = 0
+		self.in_stream:set_pos(self.init_pos)
+		self:start()
+		self:tick(timestamp)
 	end
 
 	function Replay:tick(dtime)
-		self.time = self.time + dtime
-		self.in_stream:read_events(self.time, function(evt)
+		self.time = self.time + self.speed * dtime
+		local done = self.in_stream:read_events(self.time, function(evt)
 			return event_handlers[evt.type](self, evt)
 		end)
-		-- TODO what to do when done?
+		return done
 	end
 
 	function Replay:stop()
@@ -97,8 +116,13 @@ do
 	end
 
 	core.register_globalstep(function(dtime)
-		for replay in pairs(running_replays) do
-			replay:tick(dtime)
+		for replay, on_done in pairs(running_replays) do
+			if replay:tick(dtime) then
+				if not on_done() then
+					replay:stop()
+					replay:close()
+				end
+			end
 		end
 	end)
 end

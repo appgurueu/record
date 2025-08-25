@@ -48,6 +48,10 @@ function Box:intersection(other)
 	return Box.new(min, max)
 end
 
+function Box:center()
+	return (self.min + self.max) * 0.5
+end
+
 function Box:__equals(other)
 	return self.min == other.min and self.max == other.max
 end
