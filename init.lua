@@ -1,3 +1,5 @@
+assert(modlib.version >= 104, "record requires modlib version rolling-104 or later")
+
 -- Public API
 record = {
     Recording = modlib.mod.require"recording",
