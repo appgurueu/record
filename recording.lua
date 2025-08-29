@@ -191,7 +191,15 @@ end
 function Recording:write_init()
 	local nodes = read_nodes_from_map(self.box)
 	local objects = self:get_objects_in_area()
-	self.out_stream:write_init(nodes, objects)
+	-- Dump the entire content id mapping for portability.
+	-- This is a bit wasteful, but there's a good chance we can get away with it
+	-- because Luanti only allows ~30k nodes, and games hopefully use far fewer.
+	-- At worst this results in something < 1 MB, which probably compresses well.
+	local content_ids = {}
+	for name in pairs(core.registered_nodes) do
+		content_ids[core.get_content_id(name)] = name
+	end
+	self.out_stream:write_init(nodes, objects, content_ids)
 	self.nodes = nodes
 	self.objects = objects
 end

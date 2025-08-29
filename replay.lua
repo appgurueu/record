@@ -30,7 +30,7 @@ function Replay:get_box()
 	return Box.from_extents(self.extents):offset(self.pos)
 end
 
-local function write_nodes_to_map(box, nodes)
+local function write_nodes_to_map(box, nodes, content_id_map)
 	local pmin, pmax = box:unpack()
 	local vm = VoxelManip()
 	local va = VoxelArea(vm:read_from_map(pmin, pmax))
@@ -44,7 +44,7 @@ local function write_nodes_to_map(box, nodes)
 		for _ = pmin.y, pmax.y do
 			local dst_idx = y_idx
 			for _ = pmin.x, pmax.x do
-				dst_content_ids[dst_idx] = src_content_ids[src_idx]
+				dst_content_ids[dst_idx] = assert(content_id_map[src_content_ids[src_idx]])
 				dst_param1s[dst_idx] = src_param1s[src_idx]
 				dst_param2s[dst_idx] = src_param2s[src_idx]
 				src_idx = src_idx + 1
@@ -59,6 +59,10 @@ local function write_nodes_to_map(box, nodes)
 	vm:set_param2_data(dst_param2s)
 	vm:write_to_map() -- set light=false?
 	vm:close()
+end
+
+function Replay:write_nodes_to_map(box, nodes)
+	return write_nodes_to_map(box, nodes, self.content_id_map)
 end
 
 local event_handlers = {}
@@ -83,7 +87,7 @@ function event_handlers:sparse_nodes(evt)
 end
 
 function event_handlers:nodes(evt)
-	write_nodes_to_map(evt.box:offset(self.pos), evt.new_nodes)
+	self:write_nodes_to_map(evt.box:offset(self.pos), evt.new_nodes)
 end
 
 -- Objects
@@ -171,10 +175,22 @@ end
 do
 	local running_replays = {}
 
+	local function convert_cid_map(content_ids)
+		local res = {}
+		for cid, name in pairs(content_ids) do
+			res[cid] = core.get_content_id(name)
+		end
+		res[core.CONTENT_AIR] = core.CONTENT_AIR
+		res[core.CONTENT_IGNORE] = core.CONTENT_IGNORE
+		res[core.CONTENT_UNKNOWN] = core.CONTENT_UNKNOWN
+		return res
+	end
+
 	function Replay:start(on_done)
 		local box = Box.from_extents(self.extents):offset(self.pos)
 		local init = self.in_stream:read_init()
-		write_nodes_to_map(box, init.nodes)
+		self.content_id_map = convert_cid_map(init.content_ids)
+		self:write_nodes_to_map(box, init.nodes)
 		for id, obj in pairs(assert(init.objects)) do
 			self:upsert_replay_object(id, obj, init.objects)
 		end

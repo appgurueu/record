@@ -35,10 +35,11 @@ local function pack_nodes(nodes)
 	}
 end
 
-function RecordingStream:write_init(nodes, objects)
+function RecordingStream:write_init(nodes, objects, content_ids)
 	self:write_chunk{
 		nodes = pack_nodes(nodes),
 		objects = assert(objects),
+		content_ids = assert(content_ids),
 	}
 end
 
