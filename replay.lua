@@ -13,6 +13,7 @@ function Replay.new(pos, in_file)
 		in_stream = ReplayStream.new(in_file),
 		time = 0,
 		speed = 1,
+		objrefs_by_id = {},
 	}, Replay)
 	local meta = self.in_stream:read_chunk()
 	assert(meta.version == 0)
@@ -85,6 +86,88 @@ function event_handlers:nodes(evt)
 	write_nodes_to_map(evt.box:offset(self.pos), evt.new_nodes)
 end
 
+-- Objects
+do
+	local Replayer = {}
+	-- TODO do something proper about persisting entities
+	local replayer_to_replay = setmetatable({}, {__mode = "kv"})
+	function Replayer:on_deactivate()
+		local replay = replayer_to_replay[self]
+		if replay then
+			replay.objrefs_by_id[self._id] = nil
+			replayer_to_replay[self] = nil
+		end
+	end
+	core.register_entity("record:replayer", Replayer)
+
+	function Replay:add_replayer(id, pos)
+		local obj = core.add_entity(pos, "record:replayer")
+		assert(not self.objrefs_by_id[id])
+		self.objrefs_by_id[id] = obj
+		local ent = obj:get_luaentity()
+		ent._id = id
+		replayer_to_replay[ent] = self
+		return obj
+	end
+
+	function Replay:upsert_replay_object(id, update, updates)
+		local obj = self.objrefs_by_id[id]
+		if not obj then
+			obj = self:add_replayer(id, update.pos + self.pos)
+		elseif update.pos then
+			-- obj:set_pos(update.pos + self.pos)
+			-- TODO support abrupt teleports by hooking set_pos
+			obj:move_to(update.pos + self.pos)
+		end
+		if update.velocity then
+			obj:set_velocity(update.velocity)
+		end
+		if update.acceleration then
+			obj:set_acceleration(update.acceleration)
+		end
+		if update.rotation then
+			obj:set_rotation(update.rotation)
+		end
+		if update.properties then
+			obj:set_properties(update.properties) -- note: incremental
+		end
+		if update.animation then
+			obj:set_animation(unpack(update.animation))
+		end
+		for bonename, override in pairs(update.bone_overrides or {}) do
+			obj:set_bone_override(bonename, override)
+		end
+		if update.texture_mod then
+			obj:set_texture_mod(update.texture_mod)
+		end
+		if update.attach then
+			local parent_id = update.attach[1]
+			local parent = self.objrefs_by_id[parent_id] or
+					self:upsert_replay_object(parent_id, assert(updates[parent_id]), updates)
+			if parent then
+				obj:set_attach(parent, unpack(update.attach, 2))
+			end -- else warn?
+		end
+		updates[id] = nil -- mark as done
+		return obj
+	end
+
+	function event_handlers:objects(evt)
+		for id, update in pairs(evt.diff) do
+			if update == false then -- delete
+				local obj = self.objrefs_by_id[id]
+				if obj then
+					obj:remove()
+				end -- else warn?
+			else
+				-- note: sets some fields to nil to process parents first
+				-- HACK probably cleaner to topo sort explicitly in a first pass
+				self:upsert_replay_object(id, update, evt.diff)
+			end
+		end
+	end
+end
+
 do
 	local running_replays = {}
 
@@ -92,6 +175,9 @@ do
 		local box = Box.from_extents(self.extents):offset(self.pos)
 		local init = self.in_stream:read_init()
 		write_nodes_to_map(box, init.nodes)
+		for id, obj in pairs(assert(init.objects)) do
+			self:upsert_replay_object(id, obj, init.objects)
+		end
 		running_replays[self] = on_done or function() end
 	end
 

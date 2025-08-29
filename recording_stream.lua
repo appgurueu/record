@@ -25,9 +25,6 @@ function RecordingStream:write_chunk(data)
 	local packed_len = binary.pack_u32(#str)
 	self.file:write(packed_len)
 	self.file:write(str)
-	self.file:write(packed_len)
-	-- by writing the length again at the end,
-	-- the stream can be read bidirectionally
 end
 
 local function pack_nodes(nodes)
@@ -38,9 +35,10 @@ local function pack_nodes(nodes)
 	}
 end
 
-function RecordingStream:write_init(nodes)
+function RecordingStream:write_init(nodes, objects)
 	self:write_chunk{
 		nodes = pack_nodes(nodes),
+		objects = assert(objects),
 	}
 end
 
@@ -63,6 +61,14 @@ function RecordingStream:write_nodes(timestamp, box, new_nodes)
 		timestamp = timestamp,
 		box = box,
 		new_nodes = pack_nodes(new_nodes),
+	}
+end
+
+function RecordingStream:write_objects(timestamp, diff)
+	return self:write_event{
+		type = "objects",
+		timestamp = timestamp,
+		diff = diff,
 	}
 end
 

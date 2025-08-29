@@ -43,7 +43,6 @@ function ReplayStream:read_chunk()
 	local len = binary.unpack_u32(len_str)
 	local data = self.in_file:read(len)
 	assert(#data == len)
-	assert(self.in_file:read(4) == len_str) -- trailing length
 	return serializer.deserialize(core.decompress(data, "zstd"))
 end
 
@@ -57,15 +56,13 @@ end
 
 function ReplayStream:read_init()
 	local init = self:read_chunk()
-	return {nodes = unpack_nodes(init.nodes)}
+	init.nodes = unpack_nodes(init.nodes)
+	return init
 end
 
 local unpack_event = {}
-
-function unpack_event.sparse_nodes(evt)
-	return evt
-end
-
+function unpack_event.objects(evt) return evt end
+function unpack_event.sparse_nodes(evt) return evt end
 function unpack_event.nodes(evt)
 	evt.box = Box.new(evt.box.min, evt.box.max)
 	assert(type(evt.new_nodes.content_ids) == "string")

@@ -49,10 +49,151 @@ local function read_nodes_from_map(box)
 	}
 end
 
+-- Objects
+local diff_objref_table
+do
+	local get_objref_id
+	do
+		local objref_to_id = setmetatable({}, {__mode = "k"})
+		local next_id = 1
+		function get_objref_id(objref)
+			local id = objref_to_id[objref]
+			if not id then
+				id = next_id
+				next_id = next_id + 1
+				objref_to_id[objref] = id
+			end
+			return id
+		end
+	end
+
+	local function get_rotation(objref)
+		if objref:is_player() then
+			return vector.new(0, objref:get_look_horizontal(), 0)
+		end
+		return objref:get_rotation()
+	end
+
+	-- TODO:
+	-- * punches
+	-- * hook set_animation
+	-- * hook set_sprite: there is no get_sprite
+	-- * hook set_properties, get_properties to cache properties and reduce potentially expensive get_properties calls
+	-- * players only: local animations
+	local function objref_to_table(obj)
+		assert(obj:is_valid())
+		local attach = {obj:get_attach()}
+		return {
+			pos = obj:get_pos(),
+			velocity = obj:get_velocity(),
+			acceleration = obj:get_acceleration(), -- nil for players
+			rotation = get_rotation(obj),
+			properties = obj:get_properties(),
+			animation = {obj:get_animation()},
+			bone_overrides = obj:get_bone_overrides(),
+			texture_mod = obj:get_texture_mod(),
+			attach = attach[1] and {get_objref_id(attach[1]), unpack(attach, 2)} or nil,
+		}
+	end
+
+	local function shallow_diff(old, new)
+		if old == new then
+			return
+		end
+		local diff = {}
+		for k, v in pairs(new) do
+			if not modlib.table.equals(old[k], v) then
+				diff[k] = v
+			end
+		end
+		if next(diff) ~= nil then
+			return diff
+		end
+	end
+
+	function diff_objref_table(old, new, dtime)
+		local diff = {}
+		if old.acceleration ~= new.acceleration then
+			diff.acceleration = new.acceleration
+		end
+		if old.rotation ~= new.rotation then
+			diff.rotation = new.rotation
+		end
+		if old.texture_mod ~= new.texture_mod then
+			diff.texture_mod = new.texture_mod
+		end
+
+		-- Velocity and position warrant special consideration:
+		-- If the prediction based on acceleration, velocity and dtime
+		-- is close enough to the new value, we do not want to update as to avoid jank.
+		-- (This is a tradeoff, of course: Too much tolerance and we incur jank from missing small changes.)
+		assert((old.acceleration == nil) == (new.acceleration == nil))
+		if old.acceleration then
+			local predicted_velocity = old.velocity + dtime * old.acceleration
+			if predicted_velocity:distance(new.velocity) > 0.05 then -- TODO experiment a bit
+				diff.velocity = new.velocity
+			end
+		end
+
+		local predicted_pos = old.pos + dtime * old.velocity -- approximation; luanti is not accurate either
+		if predicted_pos:distance(new.pos) > 0.05 then -- TODO experiment a bit
+			diff.pos = new.pos
+		end
+
+		diff.properties = shallow_diff(old.properties, new.properties)
+		local new_bone_overrides = {}
+		for bone in pairs(old.bone_overrides) do
+			-- Trick to represent deleted bone overrides; empty table means delete.
+			new_bone_overrides[bone] = new.bone_overrides[bone] or {}
+		end
+		diff.bone_overrides = shallow_diff(old.bone_overrides, new_bone_overrides)
+
+		if not modlib.table.equals(old.animation, new.animation) then
+			diff.animation = new.animation
+		end
+
+		if next(diff) ~= nil then
+			return diff
+		end
+	end
+
+	local function get_objects_in_area(box)
+		local objs = {}
+		for obj in core.objects_in_area(box:unpack()) do
+			objs[obj] = true
+			-- Add all parents
+			local cur_obj = obj
+			while true do
+				cur_obj = cur_obj:get_attach()
+				if (not cur_obj) or objs[cur_obj] then
+					break
+				end
+				objs[cur_obj] = true
+			end
+		end
+
+		local res = {}
+		for obj in pairs(objs) do
+			res[get_objref_id(obj)] = objref_to_table(obj)
+		end
+		return res
+	end
+
+	function Recording:get_objects_in_area()
+		local res = get_objects_in_area(self.box)
+		for _, obj in pairs(res) do
+			obj.pos = obj.pos - self.box.min
+		end
+		return res
+	end
+end
+
 function Recording:write_init()
 	local nodes = read_nodes_from_map(self.box)
-	self.out_stream:write_init(nodes)
+	local objects = self:get_objects_in_area()
+	self.out_stream:write_init(nodes, objects)
 	self.nodes = nodes
+	self.objects = objects
 end
 
 local function pack_node(content_id, param1, param2)
@@ -80,7 +221,7 @@ function Recording:update_nodes(timestamp, box, new_nodes)
 					or old_p2s[old_idx] ~= new_p2s[new_idx]
 				then
 					if n_sparse >= 1 then
-						diff[core.hash_node_position(vector.new(x, y, z))] = pack_node(
+						diff[core.hash_node_position(vector.new(x, y, z) - self.box.min)] = pack_node(
 								new_cids[new_idx], new_p1s[new_idx], new_p2s[new_idx])
 					end
 					n_sparse = n_sparse - 1
@@ -107,7 +248,7 @@ function Recording:record_mapblock_changed(block_pos)
 	if not intersection then
 		return
 	end
-	local timestamp = get_timestamp() - self.start_timestamp
+	local timestamp = self:get_timestamp()
 	local nodes = read_nodes_from_map(intersection)
 	self:update_nodes(timestamp, intersection, nodes)
 end
@@ -120,11 +261,27 @@ do
 		running_recordings[self] = true
 	end
 
-	function Recording:tick()
-		for obj in core.objects_in_area(self.box:unpack()) do
-			-- TODO poll entities
+	function Recording:tick(dtime)
+		local new_objects = self:get_objects_in_area()
+		local diff = {}
+		for id, new_object in pairs(new_objects) do
+			local old_object = self.objects[id]
+			if old_object then
+				diff[id] = diff_objref_table(old_object, new_object, dtime)
+			else
+				diff[id] = new_object
+			end
 		end
-		-- TODO beloved particlespawners and particles; we'll have to hook the core functions probably.
+		for id in pairs(self.objects) do
+			if not new_objects[id] then
+				diff[id] = false -- mark as removed
+			end
+		end
+		if next(diff) ~= nil then
+			self.out_stream:write_objects(self:get_timestamp(), diff)
+		end
+		self.objects = new_objects
+		-- TODO particlespawners and particles; we'll have to hook.
 	end
 
 	function Recording:stop()
@@ -136,14 +293,19 @@ do
 	end
 
 	local current_timestamp = 0
+
 	function get_timestamp()
 		return current_timestamp
+	end
+
+	function Recording:get_timestamp()
+		return get_timestamp() - self.start_timestamp
 	end
 
 	core.register_globalstep(function(dtime)
 		current_timestamp = current_timestamp + dtime
 		for recording in pairs(running_recordings) do
-			recording:tick()
+			recording:tick(dtime)
 		end
 	end)
 
