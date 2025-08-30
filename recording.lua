@@ -7,7 +7,6 @@ Recording.__index = Recording
 local get_timestamp
 
 function Recording.new(box, out_file)
-	-- TODO dump content id mapping!!
 	local self = setmetatable({
 		box = box,
 		out_stream = RecordingStream.new(box:extents(), out_file),
@@ -50,23 +49,94 @@ local function read_nodes_from_map(box)
 end
 
 -- Objects
-local diff_objref_table
+
+local get_aux_objref_data, clear_aux_objref_data, get_objref
 do
-	local get_objref_id
-	do
-		local objref_to_id = setmetatable({}, {__mode = "k"})
-		local next_id = 1
-		function get_objref_id(objref)
-			local id = objref_to_id[objref]
-			if not id then
-				id = next_id
-				next_id = next_id + 1
-				objref_to_id[objref] = id
+	local next_id = 1
+	local aux_objref_data = setmetatable({}, {__mode = "k"})
+	local objrefs_by_id = setmetatable({}, {__mode = "v"})
+
+	function get_aux_objref_data(obj)
+		local data = aux_objref_data[obj]
+		if data then return data end
+		data = {
+			id = next_id,
+			-- since last step:
+			set_pos_called = false,
+			set_animation_called = false,
+			-- TODO this optimization might be interesting outside of this mod
+			cached_properties = nil,
+		}
+		objrefs_by_id[data.id] = obj
+		aux_objref_data[obj] = data
+		next_id = next_id + 1
+		return data
+	end
+
+	function clear_aux_objref_data()
+		for obj, data in pairs(aux_objref_data) do
+			if not obj:is_valid() then
+				aux_objref_data[obj] = nil
+				objrefs_by_id[data.id] = nil
+			else
+				data.set_pos_called = false
+				data.set_animation_called = false
+				data.set_sprite_args = nil
 			end
-			return id
 		end
 	end
 
+	function get_objref(id)
+		local obj = objrefs_by_id[id]
+		if obj and obj:is_valid() then
+			return obj
+		end
+		return nil
+	end
+end
+
+do
+	local function hook_objref_methods(ObjRef)
+		local set_pos = ObjRef.set_pos
+		function ObjRef:set_pos(...)
+			get_aux_objref_data(self).set_pos_called = true
+			return set_pos(self, ...)
+		end
+
+		local set_animation = ObjRef.set_animation
+		function ObjRef:set_animation(...)
+			get_aux_objref_data(self).set_animation_called = true
+			return set_animation(self, ...)
+		end
+
+		local set_sprite = ObjRef.set_sprite
+		function ObjRef:set_sprite(...)
+			get_aux_objref_data(self).set_sprite_args = {...}
+			return set_sprite(self, ...)
+		end
+
+		local set_properties = ObjRef.set_properties
+		function ObjRef:set_properties(...)
+			get_aux_objref_data(self).cached_properties = nil -- invalidate
+			-- TODO in the future we might want to diff or update
+			return set_properties(self, ...)
+		end
+
+		local set_nametag_attributes = ObjRef.set_nametag_attributes
+		function ObjRef:set_nametag_attributes(...)
+			get_aux_objref_data(self).cached_properties = nil -- invalidate
+			return set_nametag_attributes(self, ...)
+		end
+	end
+
+	core.register_on_joinplayer(function(player)
+		local ObjRef = getmetatable(player)
+		hook_objref_methods(ObjRef)
+	end)
+end
+
+local diff_objref_table
+do
 	local function get_rotation(objref)
 		if objref:is_player() then
 			return vector.new(0, objref:get_look_horizontal(), 0)
@@ -74,12 +144,13 @@ do
 		return objref:get_rotation()
 	end
 
-	-- TODO:
-	-- * punches
-	-- * hook set_animation
-	-- * hook set_sprite: there is no get_sprite
-	-- * hook set_properties, get_properties to cache properties and reduce potentially expensive get_properties calls
-	-- * players only: local animations
+	local function get_properties(objref)
+		local aux_data = get_aux_objref_data(objref)
+		aux_data.cached_properties = aux_data.cached_properties or objref:get_properties()
+		return aux_data.cached_properties
+	end
+
+	-- TODO punches (low priority)
 	local function objref_to_table(obj)
 		assert(obj:is_valid())
 		local attach = {obj:get_attach()}
@@ -88,17 +159,18 @@ do
 			velocity = obj:get_velocity(),
 			acceleration = obj:get_acceleration(), -- nil for players
 			rotation = get_rotation(obj),
-			properties = obj:get_properties(),
+			properties = get_properties(obj),
 			animation = {obj:get_animation()},
 			bone_overrides = obj:get_bone_overrides(),
 			texture_mod = obj:get_texture_mod(),
-			attach = attach[1] and {get_objref_id(attach[1]), unpack(attach, 2)} or nil,
+			attach = attach[1] and {get_aux_objref_data(attach[1]).id, unpack(attach, 2)} or nil,
+			set_sprite = get_aux_objref_data(obj).set_sprite_args,
 		}
 	end
 
 	local function shallow_diff(old, new)
 		if old == new then
-			return
+			return -- optimization esp. for cached properties
 		end
 		local diff = {}
 		for k, v in pairs(new) do
@@ -111,7 +183,9 @@ do
 		end
 	end
 
-	function diff_objref_table(old, new, dtime)
+	function diff_objref_table(id, old, new, dtime)
+		local aux_data = get_aux_objref_data(assert(get_objref(id)))
+
 		local diff = {}
 		if old.acceleration ~= new.acceleration then
 			diff.acceleration = new.acceleration
@@ -138,6 +212,9 @@ do
 		local predicted_pos = old.pos + dtime * old.velocity -- approximation; luanti is not accurate either
 		if predicted_pos:distance(new.pos) > 0.05 then -- TODO experiment a bit
 			diff.pos = new.pos
+			if aux_data.set_pos_called then
+				diff.pos_teleport = true
+			end
 		end
 
 		diff.properties = shallow_diff(old.properties, new.properties)
@@ -148,9 +225,14 @@ do
 		end
 		diff.bone_overrides = shallow_diff(old.bone_overrides, new_bone_overrides)
 
-		if not modlib.table.equals(old.animation, new.animation) then
+		if
+			aux_data.set_animation_called
+			or not modlib.table.equals(old.animation, new.animation)
+		then
 			diff.animation = new.animation
 		end
+
+		diff.set_sprite = new.set_sprite
 
 		if next(diff) ~= nil then
 			return diff
@@ -174,7 +256,7 @@ do
 
 		local res = {}
 		for obj in pairs(objs) do
-			res[get_objref_id(obj)] = objref_to_table(obj)
+			res[get_aux_objref_data(obj).id] = objref_to_table(obj)
 		end
 		return res
 	end
@@ -275,7 +357,7 @@ do
 		for id, new_object in pairs(new_objects) do
 			local old_object = self.objects[id]
 			if old_object then
-				diff[id] = diff_objref_table(old_object, new_object, dtime)
+				diff[id] = diff_objref_table(id, old_object, new_object, dtime)
 			else
 				diff[id] = new_object
 			end
@@ -315,6 +397,7 @@ do
 		for recording in pairs(running_recordings) do
 			recording:tick(dtime)
 		end
+		clear_aux_objref_data()
 	end)
 
 	core.register_on_mapblocks_changed(function(modified_blocks)

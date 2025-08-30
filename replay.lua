@@ -119,9 +119,12 @@ do
 		if not obj then
 			obj = self:add_replayer(id, update.pos + self.pos)
 		elseif update.pos then
-			-- obj:set_pos(update.pos + self.pos)
-			-- TODO support abrupt teleports by hooking set_pos
-			obj:move_to(update.pos + self.pos)
+			local abs_pos = update.pos + self.pos
+			if update.pos_teleport then
+				obj:set_pos(abs_pos)
+			else
+				obj:move_to(abs_pos)
+			end
 		end
 		if update.velocity then
 			obj:set_velocity(update.velocity)
@@ -136,7 +139,12 @@ do
 			obj:set_properties(update.properties) -- note: incremental
 		end
 		if update.animation then
-			obj:set_animation(unpack(update.animation))
+			-- frame_range, frame_speed, frame_blend, frame_loop
+			obj:set_animation(unpack(update.animation, 1, 4))
+		end
+		if update.set_sprite then
+			-- start_frame, num_frames, framelength, select_x_by_camera
+			obj:set_sprite(unpack(update.set_sprite, 1, 4))
 		end
 		for bonename, override in pairs(update.bone_overrides or {}) do
 			obj:set_bone_override(bonename, override)

@@ -6,7 +6,8 @@ local Box = modlib.mod.require("box")
 local Recording = modlib.mod.require("recording")
 local Replay = modlib.mod.require("replay")
 
-local path = core.get_worldpath() .. "/recordings/singleplayer/test.rec"
+core.mkdir(core.get_worldpath() .. "/recordings/test")
+local path = core.get_worldpath() .. "/recordings/test/test.rec"
 
 core.register_on_joinplayer(function(player)
 	local f = assert(io.open(path, "wb"))
@@ -16,10 +17,10 @@ core.register_on_joinplayer(function(player)
 	recording:start()
     local pname = player:get_player_name()
     core.after(1, function()
-        core.set_node(player:get_pos(), {name = "default:dirt"})
+        core.set_node(player:get_pos(), {name = "mapgen_dirt"})
     end)
     core.after(2, function()
-        core.set_node(player:get_pos(), {name = "default:stone"})
+        core.set_node(player:get_pos(), {name = "mapgen_stone"})
     end)
     core.after(3, function()
         core.chat_send_player(pname, "Stopping & replaying recording.")
