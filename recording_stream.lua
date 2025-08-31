@@ -73,11 +73,13 @@ function RecordingStream:write_objects(timestamp, diff)
 	}
 end
 
-function RecordingStream:write_particles(timestamp, new_particles)
+function RecordingStream:write_particles(timestamp, new_particles, new_particle_spawners, deleted_particle_spawners)
 	return self:write_event{
 		type = "particles",
 		timestamp = timestamp,
 		new_particles = new_particles,
+		new_particle_spawners = new_particle_spawners,
+		deleted_particle_spawners = deleted_particle_spawners,
 	}
 end
 

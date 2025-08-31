@@ -48,11 +48,19 @@ local function read_nodes_from_map(box)
 	}
 end
 
+local next_id
+do
+	local cur_id = 0
+	function next_id()
+		cur_id = cur_id + 1
+		return cur_id
+	end
+end
+
 -- Objects
 
 local get_aux_objref_data, clear_aux_objref_data, get_objref
 do
-	local next_id = 1
 	local aux_objref_data = setmetatable({}, {__mode = "k"})
 	local objrefs_by_id = setmetatable({}, {__mode = "v"})
 
@@ -60,7 +68,7 @@ do
 		local data = aux_objref_data[obj]
 		if data then return data end
 		data = {
-			id = next_id,
+			id = next_id(),
 			-- since last step:
 			set_pos_called = false,
 			set_animation_called = false,
@@ -69,7 +77,6 @@ do
 		}
 		objrefs_by_id[data.id] = obj
 		aux_objref_data[obj] = data
-		next_id = next_id + 1
 		return data
 	end
 
@@ -273,6 +280,9 @@ end
 
 -- Particles
 local added_particles = {} -- individual particles added this server step
+local particle_spawners = {} -- id -> {id=..., def=..., expiration_job=..., box=...}
+local added_particle_spawners = {} -- particle spawners added this server step
+local deleted_particle_spawners = {} -- particle spawners deleted this server step
 do
 	local function record_particle(def)
 		-- Copy to avoid mutation issues
@@ -280,9 +290,10 @@ do
 	end
 
 	-- We can only hook and hope that mods do not localize these.
+
 	local add_particle = core.add_particle
 	function core.add_particle(...)
-		if select("#", ...) < 2 then
+		if select("#", ...) <= 1 then
 			local def = ...
 			record_particle(def)
 			return add_particle(def)
@@ -301,6 +312,131 @@ do
 		record_particle(def)
 		return add_particle(...)
 	end
+
+	local function pos_to_box(pos)
+		if type(pos) == "number" then
+			-- doesn't really make much sense but it is what it is
+			local p = vector.new(pos, pos, pos)
+			return Box.new(p, p)
+		end
+		if pos.min and pos.max then
+			return Box.new(pos.min, pos.max)
+		end
+		if vector.check(pos) then
+			return Box.new(pos, pos)
+		end
+		return Box.cube(0)
+	end
+
+	local function get_particle_spawner_box(def)
+		if def.pos then
+			return pos_to_box(def.pos)
+		end
+		if def.pos_tween then
+			if #def.pos_tween == 1 then
+				return pos_to_box(def.pos_tween[1])
+			end
+			return pos_to_box(def.pos_tween[1]):union(
+					pos_to_box(def.pos_tween[#def.pos_tween]))
+		end
+		if def.minpos and def.maxpos then
+			return Box.new(def.minpos, def.maxpos)
+		end
+		return Box.cube(0)
+	end
+
+	local function record_particle_spawner(id, def)
+		local time = def.time or 1
+		local spawner = {
+			id = next_id(),
+			def = def,
+			expiration_job = time > 0 and core.after(time, function()
+				particle_spawners[id] = nil
+			end) or nil,
+			box = get_particle_spawner_box(def),
+			start_timestamp = get_timestamp(),
+		}
+		particle_spawners[id] = spawner
+		table.insert(added_particle_spawners, spawner)
+	end
+
+	local add_particlespawner = core.add_particlespawner
+	function core.add_particlespawner(...)
+		local def
+		if select("#", ...) <= 1 then
+			def = ...
+		else
+			local amount,
+				time,
+				minpos, maxpos,
+				minvel, maxvel,
+				minacc, maxacc,
+				minexptime, maxexptime,
+				minsize, maxsize,
+				collisiondetection,
+				texture,
+				playername
+			= ...
+			def = {
+				amount = amount,
+				time = time,
+				minpos = minpos,
+				maxpos = maxpos,
+				minvel = minvel,
+				maxvel = maxvel,
+				minacc = minacc,
+				maxacc = maxacc,
+				minexptime = minexptime,
+				maxexptime = maxexptime,
+				minsize = minsize,
+				maxsize = maxsize,
+				collisiondetection = collisiondetection,
+				texture = texture,
+				playername = playername,
+			}
+		end
+		local id = add_particlespawner(...)
+		if id ~= -1 then
+			record_particle_spawner(id, def)
+		end
+		return id
+	end
+
+	local delete_particlespawner = core.delete_particlespawner
+	function core.delete_particlespawner(id)
+		local spawner = particle_spawners[id]
+		if spawner then
+			if spawner.expiration_job then
+				spawner.expiration_job:cancel()
+			end
+			deleted_particle_spawners[spawner.id] = spawner.box
+			particle_spawners[id] = nil
+		end
+		return delete_particlespawner(id)
+	end
+end
+
+local function get_particle_spawners(box)
+	local res = {}
+	for id, spawner in pairs(particle_spawners) do
+		-- TODO better intersection, clipping?
+		if box:intersection(spawner.box) then
+			local def = modlib.table.shallowcopy(spawner.def)
+			def.time = def.time or 1
+			if def.time > 0 then
+				local elapsed = get_timestamp() - spawner.start_timestamp
+				local amount_per_second = def.amount / def.time
+				def.time = math.max(0, def.time - elapsed)
+				if def.time > 0 then
+					def.amount = math.ceil(amount_per_second * def.time)
+					res[id] = def
+				end
+			else
+				res[id] = def
+			end
+		end
+	end
+	return res
 end
 
 function Recording:write_init()
@@ -314,9 +450,16 @@ function Recording:write_init()
 	for name in pairs(core.registered_nodes) do
 		content_ids[core.get_content_id(name)] = name
 	end
+	-- TODO get rid of init, replace with t=0 events entirely?
 	self.out_stream:write_init(nodes, objects, content_ids)
 	self.nodes = nodes
 	self.objects = objects
+	self.out_stream:write_particles(
+		0,
+		{},
+		get_particle_spawners(self.box),
+		{}
+	)
 end
 
 local function pack_node(content_id, param1, param2)
@@ -416,10 +559,29 @@ do
 				table.insert(new_particles, def_copy)
 			end
 		end
-		if new_particles[1] then
-			self.out_stream:write_particles(self:get_timestamp(), new_particles)
+
+		local new_pspawners = {}
+		for _, spawner in pairs(added_particle_spawners) do
+			if self.box:intersection(spawner.box) then
+				new_pspawners[spawner.id] = spawner.def
+			end
 		end
-		-- TODO particlespawners
+
+		local ded_pspawners = {}
+		for id, box in pairs(deleted_particle_spawners) do
+			if self.box:intersection(box) then
+				table.insert(ded_pspawners, id)
+			end
+		end
+
+		if new_particles[1] or next(new_pspawners) or next(ded_pspawners) then
+			self.out_stream:write_particles(
+				self:get_timestamp(),
+				new_particles,
+				new_pspawners,
+				ded_pspawners
+			)
+		end
 	end
 
 	function Recording:tick(dtime)
@@ -445,13 +607,19 @@ do
 		return get_timestamp() - self.start_timestamp
 	end
 
+	local function clear_events()
+		clear_aux_objref_data()
+		added_particles = {}
+		added_particle_spawners = {}
+		deleted_particle_spawners = {}
+	end
+
 	core.register_globalstep(function(dtime)
 		current_timestamp = current_timestamp + dtime
 		for recording in pairs(running_recordings) do
 			recording:tick(dtime)
 		end
-		clear_aux_objref_data()
-		added_particles = {}
+		clear_events()
 	end)
 
 	core.register_on_mapblocks_changed(function(modified_blocks)

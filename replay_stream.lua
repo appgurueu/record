@@ -60,10 +60,14 @@ function ReplayStream:read_init()
 	return init
 end
 
-local unpack_event = {}
-function unpack_event.objects(evt) return evt end
-function unpack_event.particles(evt) return evt end
-function unpack_event.sparse_nodes(evt) return evt end
+local function id(x) return x end
+
+local unpack_event = {
+	objects = id,
+	particles = id,
+	sparse_nodes = id,
+}
+
 function unpack_event.nodes(evt)
 	evt.box = Box.new(evt.box.min, evt.box.max)
 	assert(type(evt.new_nodes.content_ids) == "string")

@@ -48,6 +48,12 @@ function Box:intersection(other)
 	return Box.new(min, max)
 end
 
+function Box:union(other)
+	local min = self.min:combine(other.min, math.min)
+	local max = self.max:combine(other.max, math.max)
+	return Box.new(min, max)
+end
+
 function Box:contains(pos)
 	return pos.x >= self.min.x and pos.x <= self.max.x
 	   and pos.y >= self.min.y and pos.y <= self.max.y

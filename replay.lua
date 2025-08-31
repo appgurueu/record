@@ -7,13 +7,16 @@ local Replay = {}
 Replay.__index = Replay
 
 function Replay.new(pos, in_file)
-	assert(pos:floor() == pos, "Position must be an integer vector")
+	-- Very bad things happen if it is not
+	assert(pos:floor() == pos)
 	local self = setmetatable({
 		pos = pos,
 		in_stream = ReplayStream.new(in_file),
 		time = 0,
 		speed = 1,
 		objrefs_by_id = {},
+		-- [id] = {id = luanti id, expiration_job = core.after job}
+		particle_spawners = {},
 	}, Replay)
 	local meta = self.in_stream:read_chunk()
 	assert(meta.version == 0)
@@ -185,6 +188,26 @@ function event_handlers:particles(evt)
 		def.pos = vector.add(def.pos, self.pos)
 		core.add_particle(def)
 	end
+
+	for _, id in ipairs(evt.deleted_particle_spawners or {}) do
+		local spawner = self.particle_spawners[id]
+		core.delete_particlespawner(spawner.id)
+		if spawner.expiration_job then
+			spawner.expiration_job:cancel()
+		end
+		self.particle_spawners[id] = nil
+	end
+
+	for id, def in pairs(evt.new_particle_spawners or {}) do
+		local spawner = {id = core.add_particlespawner(def)}
+		self.particle_spawners[id] = spawner
+		local time = def.time or 1
+		if time > 0 then
+			spawner.expiration_job = core.after(time, function()
+				self.particle_spawners[id] = nil
+			end)
+		end
+	end
 end
 
 do
@@ -210,6 +233,7 @@ do
 			self:upsert_replay_object(id, obj, init.objects)
 		end
 		running_replays[self] = on_done or function() end
+		self:tick(0) -- process any events at time 0
 	end
 
 	function Replay:seek(timestamp)
@@ -221,6 +245,8 @@ do
 	end
 
 	function Replay:tick(dtime)
+		-- TODO if the speed is adjusted, we ought to adjust
+		-- object velocities, accelerations, and particle (spawner) times accordingly.
 		self.time = self.time + self.speed * dtime
 		local done = self.in_stream:read_events(self.time, function(evt)
 			return event_handlers[evt.type](self, evt)
@@ -229,6 +255,7 @@ do
 	end
 
 	function Replay:stop()
+		-- Remove particle spawners?
 		running_replays[self] = nil
 	end
 
