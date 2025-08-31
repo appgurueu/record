@@ -180,6 +180,13 @@ do
 	end
 end
 
+function event_handlers:particles(evt)
+	for _, def in ipairs(evt.new_particles) do
+		def.pos = vector.add(def.pos, self.pos)
+		core.add_particle(def)
+	end
+end
+
 do
 	local running_replays = {}
 

@@ -73,6 +73,14 @@ function RecordingStream:write_objects(timestamp, diff)
 	}
 end
 
+function RecordingStream:write_particles(timestamp, new_particles)
+	return self:write_event{
+		type = "particles",
+		timestamp = timestamp,
+		new_particles = new_particles,
+	}
+end
+
 function RecordingStream:close()
 	self.file:close()
 end

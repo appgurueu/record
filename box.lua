@@ -48,6 +48,12 @@ function Box:intersection(other)
 	return Box.new(min, max)
 end
 
+function Box:contains(pos)
+	return pos.x >= self.min.x and pos.x <= self.max.x
+	   and pos.y >= self.min.y and pos.y <= self.max.y
+	   and pos.z >= self.min.z and pos.z <= self.max.z
+end
+
 function Box:center()
 	return (self.min + self.max) * 0.5
 end

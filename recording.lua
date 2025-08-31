@@ -241,6 +241,7 @@ do
 
 	local function get_objects_in_area(box)
 		local objs = {}
+		-- TODO add some tolerance? Otherwise this may be a poor approximation, esp. for larger objects.
 		for obj in core.objects_in_area(box:unpack()) do
 			objs[obj] = true
 			-- Add all parents
@@ -267,6 +268,38 @@ do
 			obj.pos = obj.pos - self.box.min
 		end
 		return res
+	end
+end
+
+-- Particles
+local added_particles = {} -- individual particles added this server step
+do
+	local function record_particle(def)
+		-- Copy to avoid mutation issues
+		table.insert(added_particles, table.copy(def))
+	end
+
+	-- We can only hook and hope that mods do not localize these.
+	local add_particle = core.add_particle
+	function core.add_particle(...)
+		if select("#", ...) < 2 then
+			local def = ...
+			record_particle(def)
+			return add_particle(def)
+		end
+		local pos, velocity, acceleration, expirationtime, size, collisiondetection, texture, playername = ...
+		local def = {
+			pos = pos,
+			velocity = velocity,
+			acceleration = acceleration,
+			expirationtime = expirationtime,
+			size = size,
+			collisiondetection = collisiondetection,
+			texture = texture,
+			playername = playername,
+		}
+		record_particle(def)
+		return add_particle(...)
 	end
 end
 
@@ -351,7 +384,7 @@ do
 		running_recordings[self] = true
 	end
 
-	function Recording:tick(dtime)
+	function Recording:update_objects(dtime)
 		local new_objects = self:get_objects_in_area()
 		local diff = {}
 		for id, new_object in pairs(new_objects) do
@@ -371,7 +404,27 @@ do
 			self.out_stream:write_objects(self:get_timestamp(), diff)
 		end
 		self.objects = new_objects
-		-- TODO particlespawners and particles; we'll have to hook.
+	end
+
+	function Recording:update_particles()
+		local new_particles = {}
+		for _, def in ipairs(added_particles) do
+			-- TODO better approximation, perhaps taking velocity & exptime into account
+			if self.box:contains(vector.round(def.pos)) then
+				local def_copy = modlib.table.shallowcopy(def)
+				def_copy.pos = vector.subtract(def_copy.pos, self.box.min)
+				table.insert(new_particles, def_copy)
+			end
+		end
+		if new_particles[1] then
+			self.out_stream:write_particles(self:get_timestamp(), new_particles)
+		end
+		-- TODO particlespawners
+	end
+
+	function Recording:tick(dtime)
+		self:update_objects(dtime)
+		self:update_particles()
 	end
 
 	function Recording:stop()
@@ -398,6 +451,7 @@ do
 			recording:tick(dtime)
 		end
 		clear_aux_objref_data()
+		added_particles = {}
 	end)
 
 	core.register_on_mapblocks_changed(function(modified_blocks)

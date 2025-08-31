@@ -62,6 +62,7 @@ end
 
 local unpack_event = {}
 function unpack_event.objects(evt) return evt end
+function unpack_event.particles(evt) return evt end
 function unpack_event.sparse_nodes(evt) return evt end
 function unpack_event.nodes(evt)
 	evt.box = Box.new(evt.box.min, evt.box.max)
